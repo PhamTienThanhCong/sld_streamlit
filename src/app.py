@@ -3,12 +3,13 @@ import cv2
 import numpy as np
 from collections import deque
 from deploy_model import extract_frame_features, model, label_encoder, THRESHOLD
+from PIL import Image
+from io import BytesIO
+import base64
 import time
 
-# Cấu hình layout rộng
+# --- UI setup ---
 st.set_page_config(layout="wide")
-
-# Ẩn footer, menu, header
 hide_streamlit_style = """
     <style>
     #MainMenu {visibility: hidden;}
@@ -24,93 +25,107 @@ if "start_camera" not in st.session_state:
     st.session_state.start_camera = False
 if "labels" not in st.session_state:
     st.session_state.labels = []
+if "window" not in st.session_state:
+    st.session_state.window = deque(maxlen=30)
 
-# Giao diện khởi động
+# --- Giao diện khởi động ---
 if not st.session_state.start_camera:
     if st.button("▶️ Bắt đầu nhận diện"):
         st.session_state.start_camera = True
         st.rerun()
 
-# Khi đã bắt đầu nhận diện
+# --- Khi đã bật camera ---
 if st.session_state.start_camera:
-    # Thanh công cụ
     col1, col2 = st.columns([1, 1])
     with col1:
         if st.button("🗑️ Xoá kết quả"):
             st.session_state.labels = []
-    # with col2:
-    #     if st.button("🗣️ Chuyển sang ngôn ngữ nói"):
-    #         full_text = " ".join(st.session_state.labels)
-
+            st.session_state.window.clear()
     result_placeholder = st.empty()
     result_placeholder.success(f"Nhận diện: {' '.join(st.session_state.labels)}")
 
-    # Mở webcam
-    cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        st.error("Lỗi: Không thể mở webcam")
-        st.session_state.start_camera = False
-    else:
-        stframe = st.empty()
-        window = deque(maxlen=30)
+    # --- Giao diện webcam browser ---
+    st.markdown("### 👇 Cho phép truy cập webcam và bấm chụp để nhận diện")
+    html_code = """
+    <div style="text-align: center">
+        <video id="video" width="640" height="480" autoplay playsinline></video>
+        <br />
+        <button id="capture" style="margin-top: 10px;">📸 Chụp ảnh</button>
+        <canvas id="canvas" width="640" height="480" style="display:none;"></canvas>
+        <script>
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const capture = document.getElementById('capture');
 
-        # Biến trạng thái cho extract_frame_features
-        prev_right = prev_left = prev_right_center = prev_left_center = None
-        prev_right_shoulder_dists = (0.0, 0.0)
-        prev_left_shoulder_dists = (0.0, 0.0)
-        prev_shoulder_left = prev_shoulder_right = None
+        navigator.mediaDevices.getUserMedia({ video: true }).then(stream => {
+            video.srcObject = stream;
+        });
 
-        # Vòng lặp mô phỏng thời gian thực
-        for _ in range(
-            500
-        ):  # bạn có thể chỉnh thành vòng lặp vô hạn nếu dùng threading
-            ret, frame = cap.read()
-            if not ret:
-                st.error("Không thể đọc webcam")
-                break
+        capture.onclick = () => {
+            canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+            const dataUrl = canvas.toDataURL('image/jpeg');
+            const input = window.parent.document.querySelector('input[data-testid="stTextInput"]');
+            if (input) {
+                input.value = dataUrl;
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+            }
+        };
+        </script>
+    """
+    st.components.v1.html(html_code, height=550)
 
-            # Trích xuất đặc trưng
-            (
-                frame_features,
-                hand_detected,
-                prev_right,
-                prev_left,
-                prev_right_center,
-                prev_left_center,
-                right_shoulder_dists,
-                left_shoulder_dists,
-                prev_shoulder_left,
-                prev_shoulder_right,
-            ) = extract_frame_features(
-                frame,
-                prev_right,
-                prev_left,
-                prev_right_center,
-                prev_left_center,
-                prev_right_shoulder_dists,
-                prev_left_shoulder_dists,
-                prev_shoulder_left,
-                prev_shoulder_right,
-            )
+    # --- Nhận ảnh base64 gửi từ JS ---
+    img_data_url = st.text_input("Ảnh base64 từ webcam (ẩn)")
 
-            window.append(frame_features)
+    if img_data_url.startswith("data:image"):
+        img_bytes = base64.b64decode(img_data_url.split(",")[1])
+        img = Image.open(BytesIO(img_bytes))
+        frame = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
 
-            if len(window) == 30:
-                pred = model.predict(np.array(window)[np.newaxis, ...], verbose=0)
-                confidence = np.max(pred)
-                if confidence >= THRESHOLD:
-                    pred_class = np.argmax(pred, axis=1)
-                    predicted_label = label_encoder.inverse_transform(pred_class)[0]
-                    st.session_state.labels.append(predicted_label)
-                    # Cập nhật kết quả mỗi lần có từ mới
-                    result_placeholder.success(
-                        f"Nhận diện: {' '.join(st.session_state.labels)}"
-                    )
-                window.clear()
+        # --- Biến trạng thái ---
+        if "prev_right" not in st.session_state:
+            st.session_state.prev_right = st.session_state.prev_left = None
+            st.session_state.prev_right_center = st.session_state.prev_left_center = None
+            st.session_state.prev_right_shoulder_dists = (0.0, 0.0)
+            st.session_state.prev_left_shoulder_dists = (0.0, 0.0)
+            st.session_state.prev_shoulder_left = st.session_state.prev_shoulder_right = None
 
-            # Hiển thị webcam
-            stframe.image(frame, channels="BGR", use_container_width=True)
-            time.sleep(0.05)
+        # --- Extract features ---
+        (
+            frame_features,
+            hand_detected,
+            st.session_state.prev_right,
+            st.session_state.prev_left,
+            st.session_state.prev_right_center,
+            st.session_state.prev_left_center,
+            right_shoulder_dists,
+            left_shoulder_dists,
+            st.session_state.prev_shoulder_left,
+            st.session_state.prev_shoulder_right,
+        ) = extract_frame_features(
+            frame,
+            st.session_state.prev_right,
+            st.session_state.prev_left,
+            st.session_state.prev_right_center,
+            st.session_state.prev_left_center,
+            st.session_state.prev_right_shoulder_dists,
+            st.session_state.prev_left_shoulder_dists,
+            st.session_state.prev_shoulder_left,
+            st.session_state.prev_shoulder_right,
+        )
 
-        cap.release()
-        st.session_state.start_camera = False
+        st.session_state.window.append(frame_features)
+
+        # --- Dự đoán ---
+        if len(st.session_state.window) == 30:
+            pred = model.predict(np.array(st.session_state.window)[np.newaxis, ...], verbose=0)
+            confidence = np.max(pred)
+            if confidence >= THRESHOLD:
+                pred_class = np.argmax(pred, axis=1)
+                predicted_label = label_encoder.inverse_transform(pred_class)[0]
+                st.session_state.labels.append(predicted_label)
+                result_placeholder.success(f"Nhận diện: {' '.join(st.session_state.labels)}")
+            st.session_state.window.clear()
+
+        # Hiển thị ảnh chụp
+        st.image(frame, channels="BGR", caption="Ảnh vừa chụp", use_container_width=True)
