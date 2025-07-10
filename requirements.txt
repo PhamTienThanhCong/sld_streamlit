@@ -5,4 +5,4 @@ mediapipe
 numpy
 pandas
 scikit-learn
-Pillow
+streamlit-webrtc
