@@ -1,10 +1,17 @@
+# Frontend (nếu vẫn dùng Streamlit để test)
 streamlit
+streamlit-webrtc
+
+# Xử lý ảnh/video
 opencv-python-headless
+
+# Machine Learning
 tensorflow
 mediapipe
 numpy
 pandas
 scikit-learn
-streamlit-webrtc
+
+# Web backend
 fastapi
-uvicorn
+uvicorn[standard]
