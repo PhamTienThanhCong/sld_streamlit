@@ -14,13 +14,18 @@ with open(METADATA_PATH, 'r', encoding='utf-8') as f:
 
 app = FastAPI()
 
-# Cho phép mọi frontend kết nối (nên giới hạn domain khi deploy thật)
+# 👇 Thêm CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # ✅ Cho phép tất cả, hoặc dùng ['https://your-frontend.com']
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.get("/")
+async def root():
+    return {"message": "Welcome to the SLD Streamlit API!"}
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
